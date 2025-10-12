@@ -1,5 +1,5 @@
 Slide 1: Title
-- AgriFund Token  
+- Agritrust Token  
 - “Empowering African Farmers Through Web3 Micro-Investment”
 
 Slide 2: Problem
