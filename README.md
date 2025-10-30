@@ -33,3 +33,5 @@ Slide 7: Roadmap
 Slide 8: Call to Action
 - “Join us in transforming agriculture in Africa. Let’s build trust, transparency, and prosperity together# Agrifund-token
 "hedera-powered-micro-farm equity platform
+
+https://github.com/hashgraph
