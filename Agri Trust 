@@ -1,0 +1,574 @@
+Agritrust Token — Full‑Stack Scaffold (Frontend + Backend + Hedera Integration)
+
+/* This single-file scaffold contains:
+
+1. Project structure overview
+
+
+2. Backend (Node.js + Express) with Hedera SDK integration (HTS & HCS)
+
+
+3. Frontend (React) sample components (mobile-first) for onboarding, marketplace, invest, dashboard
+
+
+4. Sample transactions (mocked) and example data
+
+
+5. AI Image prompts for UI visuals and realistic photos
+
+
+6. Run & deploy instructions
+
+
+
+Notes:
+
+This is an MVP scaffold. You should replace placeholders (private keys, account IDs, API keys) before running.
+
+Hedera JS SDK is used for HTS & HCS operations.
+
+This file is meant to be copied into a real repo with files shown below. */
+
+
+
+---
+
+Project structure (what to create in your repo)
+
+agrifund-token/
+├─ backend/
+│  ├─ package.json
+│  ├─ src/
+│  │  ├─ server.js
+│  │  ├─ hederaClient.js
+│  │  ├─ routes/
+│  │  │  ├─ farms.js
+│  │  │  └─ investments.js
+│  │  └─ data/mockdb.js
+├─ frontend/
+│  ├─ package.json
+│  ├─ src/
+│  │  ├─ main.jsx
+│  │  ├─ App.jsx
+│  │  ├─ pages/
+│  │  │  ├─ OnboardFarm.jsx
+│  │  │  ├─ Marketplace.jsx
+│  │  │  └─ Dashboard.jsx
+│  │  └─ components/
+│  │     ├─ FarmCard.jsx
+│  │     └─ InvestModal.jsx
+├─ hedera-scripts/
+│  └─ exampleTokenOps.js
+└─ README.md
+
+
+---
+
+1) Backend: Node.js + Express + Hedera SDK
+
+Create backend/package.json:
+
+{
+  "name": "agritrust-backend",
+  "version": "0.1.0",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "@hashgraph/sdk": "^2.8.0"
+  }
+}
+
+Create backend/src/hederaClient.js (Hedera SDK helper):
+
+// hederaClient.js
+const { Client, PrivateKey, AccountId, TokenCreateTransaction, TokenType, TokenSupplyType, Hbar, TransferTransaction, TokenMintTransaction, TopicCreateTransaction, TopicMessageSubmitTransaction } = require("@hashgraph/sdk");
+require('dotenv').config();
+
+// Use testnet for hackathon/dev. For mainnet swap endpoints and keys
+const operatorId = AccountId.fromString(process.env.HEDERA_OPERATOR_ID);
+const operatorKey = PrivateKey.fromString(process.env.HEDERA_OPERATOR_KEY);
+
+const client = Client.forTestnet();
+client.setOperator(operatorId, operatorKey);
+
+module.exports = {
+  client,
+  createToken: async ({name, symbol, initialSupply = 0, decimals = 0}) => {
+    // Create a fungible token representing crop shares
+    const tx = await new TokenCreateTransaction()
+      .setTokenName(name)
+      .setTokenSymbol(symbol)
+      .setDecimals(decimals)
+      .setInitialSupply(initialSupply)
+      .setTreasuryAccountId(operatorId)
+      .setTokenType(TokenType.FungibleCommon)
+      .setSupplyType(TokenSupplyType.Finite)
+      .setTreasuryAccountId(operatorId)
+      .freezeWith(client);
+
+    const signTx = await tx.sign(operatorKey);
+    const txResponse = await signTx.execute(client);
+    const receipt = await txResponse.getReceipt(client);
+    const tokenId = receipt.tokenId.toString();
+    return tokenId;
+  },
+  submitHcsMessage: async (topicId, message) => {
+    const tx = await new TopicMessageSubmitTransaction({
+      topicId,
+      message: Buffer.from(JSON.stringify(message))
+    }).execute(client);
+    const receipt = await tx.getReceipt(client);
+    return receipt;
+  },
+};
+
+Create backend/src/data/mockdb.js (simple in-memory DB for MVP):
+
+// mockdb.js
+module.exports = {
+  farms: [
+    {
+      id: 'farm-001',
+      name: 'Mama Aisha Maize Farm',
+      location: 'Kaduna, Nigeria',
+      tokenSymbol: 'MAIZE1',
+      tokenId: null,
+      totalTokens: 10000,
+      pricePerTokenUSD: 0.5,
+      owner: '0.0.12345'
+    }
+  ],
+  investments: []
+};
+
+Create backend/src/routes/farms.js:
+
+const express = require('express');
+const router = express.Router();
+const db = require('../data/mockdb');
+const { createToken } = require('../hederaClient');
+
+// List farms
+router.get('/', (req, res) => {
+  res.json(db.farms);
+});
+
+// Create / onboard farm (issue token)
+router.post('/onboard', async (req, res) => {
+  try {
+    const { name, location, totalTokens, tokenSymbol } = req.body;
+    // Create a token on Hedera
+    const tokenId = await createToken({ name: `${name} Harvest`, symbol: tokenSymbol, initialSupply: totalTokens });
+    const newFarm = {
+      id: `farm-${Date.now()}`,
+      name,
+      location,
+      tokenSymbol,
+      tokenId,
+      totalTokens,
+      pricePerTokenUSD: req.body.pricePerTokenUSD || 0.5,
+      owner: req.body.owner || '0.0.12345'
+    };
+    db.farms.push(newFarm);
+    res.json(newFarm);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to onboard farm' });
+  }
+});
+
+module.exports = router;
+
+Create backend/src/routes/investments.js:
+
+const express = require('express');
+const router = express.Router();
+const db = require('../data/mockdb');
+const { client } = require('../hederaClient');
+
+// Invest in a farm (mock: record investment and pretend transfer)
+router.post('/invest', async (req, res) => {
+  try {
+    const { farmId, investor, tokensBought } = req.body;
+    const farm = db.farms.find(f => f.id === farmId);
+    if (!farm) return res.status(404).json({ error: 'Farm not found' });
+
+    // In production: perform HTS token transfer from treasury to investor account
+    // Here: we append to investments and reduce available tokens
+    farm.totalTokens -= tokensBought;
+    const invest = { id: `inv-${Date.now()}`, farmId, investor, tokensBought, timestamp: Date.now() };
+    db.investments.push(invest);
+
+    res.json({ success: true, invest });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Investment failed' });
+  }
+});
+
+module.exports = router;
+
+Create backend/src/server.js:
+
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+require('dotenv').config();
+
+const farms = require('./routes/farms');
+const investments = require('./routes/investments');
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+
+app.use('/api/farms', farms);
+app.use('/api/investments', investments);
+
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => console.log(`Backend running on ${PORT}`));
+
+.env (example):
+
+HEDERA_OPERATOR_ID=0.0.xxxxx
+HEDERA_OPERATOR_KEY=302e020100300506032b657004220420...
+
+
+---
+
+2) Hedera helper scripts (example token ops) — hedera-scripts/exampleTokenOps.js
+
+const { Client, PrivateKey, AccountId, TokenCreateTransaction, TokenType, TokenSupplyType, Hbar } = require('@hashgraph/sdk');
+require('dotenv').config();
+
+async function main(){
+  const operatorId = AccountId.fromString(process.env.HEDERA_OPERATOR_ID);
+  const operatorKey = PrivateKey.fromString(process.env.HEDERA_OPERATOR_KEY);
+  const client = Client.forTestnet();
+  client.setOperator(operatorId, operatorKey);
+
+  const tx = await new TokenCreateTransaction()
+    .setTokenName('Mama Aisha Maize')
+    .setTokenSymbol('MAIZE1')
+    .setDecimals(0)
+    .setInitialSupply(10000)
+    .setTreasuryAccountId(operatorId)
+    .setTokenType(TokenType.FungibleCommon)
+    .setSupplyType(TokenSupplyType.Finite)
+    .freezeWith(client);
+
+  const sign = await tx.sign(operatorKey);
+  const txResponse = await sign.execute(client);
+  const receipt = await txResponse.getReceipt(client);
+  console.log('Token created:', receipt.tokenId.toString());
+}
+
+main();
+
+
+---
+
+3) Frontend (React) — key files
+
+frontend/package.json (use Vite):
+
+{
+  "name": "agritrust-frontend",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "axios": "^1.4.0",
+    "react-router-dom": "^6.9.0"
+  }
+}
+
+frontend/src/main.jsx:
+
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import App from './App'
+import OnboardFarm from './pages/OnboardFarm'
+import Marketplace from './pages/Marketplace'
+import Dashboard from './pages/Dashboard'
+
+createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <Routes>
+        <Route path='/' element={<App/>}>
+          <Route index element={<Marketplace/>} />
+          <Route path='onboard' element={<OnboardFarm/>} />
+          <Route path='dashboard' element={<Dashboard/>} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  </React.StrictMode>
+)
+
+frontend/src/App.jsx (simple layout):
+
+import React from 'react'
+import { Link, Outlet } from 'react-router-dom'
+
+export default function App(){
+  return (
+    <div className='min-h-screen bg-gray-50'>
+      <header className='p-4 bg-white shadow-sm flex justify-between items-center'>
+        <div className='flex items-center gap-3'>
+          <img src='/logo.png' alt='Agritrust' className='h-10'/>
+          <h1 className='font-bold'>AgriFund Token</h1>
+        </div>
+        <nav className='flex gap-4'>
+          <Link to='/'>Marketplace</Link>
+          <Link to='/onboard'>Onboard Farm</Link>
+          <Link to='/dashboard'>Dashboard</Link>
+        </nav>
+      </header>
+      <main className='p-6'>
+        <Outlet />
+      </main>
+    </div>
+  )
+}
+
+frontend/src/pages/Marketplace.jsx:
+
+import React, {useEffect, useState} from 'react'
+import axios from 'axios'
+
+export default function Marketplace(){
+  const [farms, setFarms] = useState([])
+  useEffect(()=>{
+    axios.get('http://localhost:4000/api/farms').then(r=>setFarms(r.data))
+  },[])
+
+  return (
+    <div>
+      <h2 className='text-2xl font-bold mb-4'>Marketplace</h2>
+      <div className='grid gap-4'>
+        {farms.map(f=> (
+          <div className='p-4 bg-white rounded shadow-sm flex justify-between' key={f.id}>
+            <div>
+              <h3 className='font-semibold'>{f.name}</h3>
+              <p className='text-sm text-gray-600'>{f.location}</p>
+              <p className='text-xs text-gray-500'>Token: {f.tokenSymbol} ({f.tokenId || '---'})</p>
+            </div>
+            <div className='flex flex-col gap-2'>
+              <button className='px-3 py-2 bg-green-600 text-white rounded'>Invest</button>
+              <a className='text-sm text-blue-600' href='#'>Details</a>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+frontend/src/pages/OnboardFarm.jsx (simple form to call backend):
+
+import React, {useState} from 'react'
+import axios from 'axios'
+
+export default function OnboardFarm(){
+  const [form, setForm] = useState({ name: '', location: '', totalTokens: 1000, tokenSymbol: 'MAIZE1' })
+  const [status, setStatus] = useState(null)
+
+  const submit = async (e)=>{
+    e.preventDefault();
+    setStatus('Submitting...')
+    try{
+      const res = await axios.post('http://localhost:4000/api/farms/onboard', form)
+      setStatus('Onboarded: ' + res.data.id)
+    }catch(err){
+      setStatus('Failed: ' + (err?.response?.data?.error || err.message))
+    }
+  }
+
+  return (
+    <div className='max-w-md mx-auto bg-white p-6 rounded shadow'>
+      <h2 className='text-xl font-bold mb-4'>Onboard a Farm</h2>
+      <form onSubmit={submit} className='space-y-3'>
+        <input value={form.name} onChange={e=>setForm({...form, name:e.target.value})} placeholder='Farm name' className='w-full p-2 border rounded' />
+        <input value={form.location} onChange={e=>setForm({...form, location:e.target.value})} placeholder='Location' className='w-full p-2 border rounded' />
+        <input value={form.tokenSymbol} onChange={e=>setForm({...form, tokenSymbol:e.target.value})} placeholder='Token Symbol' className='w-full p-2 border rounded' />
+        <input type='number' value={form.totalTokens} onChange={e=>setForm({...form, totalTokens:parseInt(e.target.value)})} className='w-full p-2 border rounded' />
+        <button className='w-full p-2 bg-green-600 text-white rounded'>Create Token & Onboard</button>
+      </form>
+      {status && <p className='mt-3'>{status}</p>}
+    </div>
+  )
+}
+
+frontend/src/pages/Dashboard.jsx (simple investments list):
+
+import React, {useEffect, useState} from 'react'
+import axios from 'axios'
+
+export default function Dashboard(){
+  const [investments, setInvestments] = useState([])
+  useEffect(()=>{
+    // mock: there's no api to list investments in scaffold, so we hit the mock DB through a dev endpoint (extend later)
+    axios.get('http://localhost:4000/api/farms').then(r=>console.log('farms', r.data)).catch(()=>{})
+  },[])
+
+  return (
+    <div>
+      <h2 className='text-2xl font-bold mb-4'>Dashboard</h2>
+      <p className='text-sm text-gray-600'>Your investments and farm status will appear here.</p>
+    </div>
+  )
+}
+
+
+---
+
+4) Sample Transactions (mocked) — what you can show in the demo
+
+1. Onboard Farm (backend call)
+
+
+
+POST http://localhost:4000/api/farms/onboard
+Content-Type: application/json
+
+{
+  "name":"Mama Aisha Maize Farm",
+  "location":"Kaduna",
+  "totalTokens":10000,
+  "tokenSymbol":"MAIZE1",
+  "pricePerTokenUSD":0.5
+}
+
+Response (example):
+
+{
+  "id":"farm-1690000000000",
+  "name":"Mama Aisha Maize Farm",
+  "location":"Kaduna",
+  "tokenSymbol":"MAIZE1",
+  "tokenId":"0.0.123456",
+  "totalTokens":10000
+}
+
+2. Invest (mock):
+
+
+
+POST http://localhost:4000/api/investments/invest
+Content-Type: application/json
+
+{
+  "farmId":"farm-1690000000000",
+  "investor":"0.0.54321",
+  "tokensBought":100
+}
+
+Response:
+
+{ "success": true, "invest": { "id": "inv-1690000001000", "farmId": "farm-1690000000000", "investor": "0.0.54321", "tokensBought": 100 } }
+
+3. Hedera Token Create (example script run):
+
+
+
+node hedera-scripts/exampleTokenOps.js
+// logs: Token created: 0.0.123456
+
+
+---
+
+5) Generated images — UI & realistic photos
+
+Below are AI image prompts to create visuals that look realistic (use Midjourney/DALLE or your preferred generator). Keep style photorealistic and avoid obvious AI artifacts.
+
+Photo: Farmer + Agent (realistic)
+
+Photorealistic photo of a middle-aged West African woman standing in a thriving maize field holding fresh maize; a young man next to her wearing a blue shirt uses a smartphone to show a digital receipt. Natural sunlight, shallow depth of field, authentic clothing, high-resolution, documentary style photography.
+
+UI Mockup: Mobile Marketplace
+
+Realistic mobile app screenshot: header 'Agritrust' Token', card list of farms with images, each card shows farm name, token symbol, price per token, and 'Invest' button. Use modern clean UI: rounded cards, soft shadows, green primary button, white background. 16:9 phone screenshot.
+
+Logo Variation (transparent PNG)
+
+Minimal vector logo combining an abstract leaf and shield with a circular token ring; colors: #2D7A2B (green), #F0B429 (gold), #1F6EA3 (blue). Provide high-resolution PNG and SVG, transparent background.
+
+Use these prompts with an image generator and export PNGs for your Figma landing page.
+
+
+---
+
+6) Run instructions (dev)
+
+1. Backend
+
+
+
+cd backend
+npm install
+# create .env with HEDERA_OPERATOR_ID and HEDERA_OPERATOR_KEY
+npm run dev
+
+2. Frontend
+
+
+
+cd frontend
+npm install
+npm run dev
+# open http://localhost:5173
+
+3. Hedera token create (optional, from hedera-scripts)
+
+
+
+cd hedera-scripts
+node exampleTokenOps.js
+
+
+---
+
+7) Security & production notes
+
+Never commit private keys to Git. Use dotenv + secrets manager for deploys.
+
+For production, consider Hedera mainnet or a permissioned deployment.
+
+Use custodial / non-custodial wallet approaches carefully; UX for farmers may require custodial account management.
+
+Add KYC/AML & local regulation compliance for investments.
+
+
+
+---
+
+8) Next steps I can help with (pick any):
+
+Generate the real repo files and a downloadable ZIP.
+
+Create detailed smart contract flows for automated profit distribution (pseudocode & security review).
+
+Build UI components in Figma or export React components with Tailwind styles.
+
+Add fiat on/off ramp integration (e.g., Stripe, Flutterwave) and sample code.
+
+
+
+---
+
+Good luck bro — this scaffold is jump‑start ready. If you want, I can now generate the full repo as downloadable files (ZIP) and include example keys only as placeholders. Would you like me to create the repo files now?*/
